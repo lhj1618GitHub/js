@@ -39,6 +39,7 @@
     { host: "cloud.tencent.com", keys: ["target"] }, // 腾讯云
     { host: "www.kdocs.cn", keys: ["target"] }, // 金山文档
     { host: "www.google.com.hk", keys: ["q"] }, // Google 香港
+    { host: "link.gitcode.com/", keys: ["target"] }, // gitcode
   ];
 
 

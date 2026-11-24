@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页翻译器
-// @description  分段翻译，及时显示译文
-// @version      8.2
+// @description  支持整页分段流式翻译
+// @version      8.5
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -19,7 +19,7 @@
   const floatButtonVisible = GM_getValue('floatButtonVisible', true);
 
   // ══════════════════════════════════════════════════════════
-  // 配置读取 (默认引擎 deepl)
+  // 配置读取 (默认引擎 tencent，默认不自动翻译)
   // ══════════════════════════════════════════════════════════
   const deviceLang = (navigator.language || navigator.userLanguage || 'zh-CN').split('-')[0];
   const [
@@ -30,9 +30,9 @@
     _displayMode,
     _pos
   ] = await Promise.all([
-    GM_getValue('engine', 'deepl'),
+    GM_getValue('engine', 'tencent'),
     GM_getValue('targetLang', deviceLang === 'zh' ? 'zh-CN' : deviceLang),
-    GM_getValue('autoMode', true),
+    GM_getValue('autoMode', false),
     GM_getValue('excludedHosts', '[]'),
     GM_getValue('displayMode', 'translated'),
     GM_getValue('uiPos', JSON.stringify({ right: 20, bottom: 20 }))
@@ -41,7 +41,8 @@
   let targetLang = _targetLang;
   let autoMode = _autoMode;
   let excludedHosts = JSON.parse(_excludedHosts);
-  let displayMode = _displayMode;
+  // 旧配置迁移：bilingual 模式已移除
+  let displayMode = _displayMode === 'bilingual' ? 'translated' : _displayMode;
   let uiPos = JSON.parse(_pos);
   let translateUI = null; // 保存悬浮按钮DOM
 
@@ -56,7 +57,7 @@
     return;
   }
 
-  // 新增：显示/隐藏悬浮按钮 菜单
+  // 显示/隐藏悬浮按钮 菜单
   GM_registerMenuCommand('🔘 显示/隐藏悬浮按钮', () => {
     const visible = !GM_getValue('floatButtonVisible', true);
     GM_setValue('floatButtonVisible', visible);
@@ -72,40 +73,9 @@
   const LANG_GROUPS = { "常用": ["zh-CN","zh-TW","en","ja","ko","fr","de","es","ru","pt","ar","th","vi","it","tr","id"], "欧洲": ["nl","pl","uk","cs","sk","hu","ro","bg","hr","sr","sl","lt","lv","et","fi","sv","da","no","is","el","be","bs","ca","gl","eu","mt","cy","ga","gd","lb","af","eo","la","co","fy","fo","br","oc","sc","scn","szl","fur","lij","lmo","li","vec","ltg","dsb","hsb","gv","se"], "亚洲": ["hi","bn","ta","te","kn","ml","pa","gu","mr","ne","si","ur","fa","ps","my","km","lo","ka","hy","az","kk","uz","mn","tg","tk","ky","tt","ug","dv","or","as","sa","mai","bho","doi","mni-Mtei","gom","awa","ks","brx","hne","mwr","trp","kac","bo","dz","yue","lzh","ms","fil","ceb","jv","su","hmn","ilo","hil","bik","pam","pag","war","ban","mad","mak","min","ace","btx","bts","bbc","bew","iba","ms-Arab","kha"], "非洲": ["sw","ha","ig","yo","zu","xh","sn","st","so","am","ti","om","mg","ny","lg","rw","ak","ee","bm","ln","nso","ts","kri","wo","ff","gaa","fon","bci","dyu","bem","luo","sg","kg","mkw","dov","nus","din","ach","alz","ndc-ZW","nr","rn","mfe"], "美洲/大洋洲": ["pt-PT","fr-CA","ht","qu","gn","ay","haw","sm","mi","fj","mh","ch","chk","jam","nhe","mam","kek","pap","hrx","ikt","iu","iu-Latn","kl"], "其他": ["ab","av","ba","bua","ce","cv","crh","kv","chm","mrj","os","rom","nqo","aa","bal","cnh","kr","prs","pa-Arab","sd","ckb","ku","he"] };
 
   // ══════════════════════════════════════════════════════════
-  // 翻译引擎（DeepL + 腾讯）
+  // 翻译引擎（仅腾讯）
   // ══════════════════════════════════════════════════════════
   const Engine = {
-    deepl: {
-      name: 'DeepL',
-      langCode(l) {
-        const m = {
-          'zh': 'ZH', 'zh-CN': 'ZH', 'zh-TW': 'ZH-HANT',
-          'en': 'EN', 'ja': 'JA', 'ko': 'KO', 'fr': 'FR', 'de': 'DE',
-          'es': 'ES', 'ru': 'RU', 'pt': 'PT', 'pt-PT': 'PT', 'it': 'IT',
-          'nl': 'NL', 'pl': 'PL', 'uk': 'UK', 'tr': 'TR', 'ar': 'AR',
-          'bg': 'BG', 'cs': 'CS', 'da': 'DA', 'el': 'EL', 'et': 'ET',
-          'fi': 'FI', 'hu': 'HU', 'id': 'ID', 'lt': 'LT', 'lv': 'LV',
-          'no': 'NB', 'ro': 'RO', 'sk': 'SK', 'sl': 'SL', 'sv': 'SV'
-        };
-        return m[l] || l.toUpperCase();
-      },
-      async translate(text, toLang) {
-        const to = this.langCode(toLang);
-        const r = await gmFetch({
-          method: 'POST',
-          url: 'https://api.deeplx.org/translate',
-          headers: { 'Content-Type': 'application/json' },
-          data: JSON.stringify({ text: text, target_lang: to })
-        });
-        if (r.status !== 200) throw new Error('DeepLX HTTP ' + r.status);
-        let data;
-        try { data = JSON.parse(r.responseText); } catch (_) { throw new Error('DeepLX bad json'); }
-        if (data.code === 200 && typeof data.data === 'string') return data.data;
-        if (data.translations && data.translations[0] && data.translations[0].text) return data.translations[0].text;
-        if (typeof data.data === 'string') return data.data;
-        throw new Error('DeepLX unexpected response');
-      }
-    },
     tencent: {
       name: 'Tencent', _clientKey: null,
       getClientKey() { if (this._clientKey) return this._clientKey; this._clientKey = 'browser-chrome-120.0-Windows_10-' + crypto.randomUUID() + '-' + Date.now(); return this._clientKey; },
@@ -123,8 +93,8 @@
     }
   };
 
-  // 迁移旧配置：若保存的引擎已不存在（如 microsoft），回落到 deepl
-  if (!Engine[currentEngine]) currentEngine = 'deepl';
+  // 迁移旧配置：若保存的引擎已不存在，回落到 tencent
+  if (!Engine[currentEngine]) currentEngine = 'tencent';
 
   const Utils = {
     escapeHTML(t) { const d = document.createElement('div'); d.appendChild(document.createTextNode(t)); return d.innerHTML; },
@@ -142,13 +112,7 @@
     try {
       const result = await Engine[currentEngine].translate(trimmed, targetLang);
       if (result && result !== trimmed) { cacheSet(trimmed, result); return result; }
-    } catch (e) {
-      const fallbackEngine = currentEngine === 'deepl' ? 'tencent' : 'deepl';
-      try {
-        const result = await Engine[fallbackEngine].translate(trimmed, targetLang);
-        if (result && result !== trimmed) { cacheSet(trimmed, result); return result; }
-      } catch (_) {}
-    }
+    } catch (_) {}
     return null;
   }
   async function batchTranslate(texts) {
@@ -180,7 +144,6 @@
         return results;
       } catch (e) {}
     }
-    // DeepL 公共实例对高并发较敏感，降低并发数
     const CONCURRENCY = 4;
     for (let i = 0; i < uncached.length; i += CONCURRENCY) {
       const batch = uncached.slice(i, i + CONCURRENCY);
@@ -198,7 +161,6 @@
       if (SKIP_CLASS.test(node.className)) return true;
       if (node.isContentEditable) return true;
       if (node.dataset && node.dataset.translated) return true;
-      if (node.classList && node.classList.contains('tu-bi')) return true;
     }
     return false;
   }
@@ -225,6 +187,40 @@
     return nodes;
   }
   function collectPlaceholders(root) { return [...root.querySelectorAll('input[placeholder], textarea[placeholder]')].filter(el => !el.dataset.translated && el.placeholder.trim() && !isTargetLang(el.placeholder)); }
+
+  // ══════════════════════════════════════════════════════════
+  // 分段流式翻译
+  // ══════════════════════════════════════════════════════════
+  const SEGMENT_SIZE = 8;        // 每段包含的文本条数
+  const SEGMENT_CONCURRENCY = 3; // 同时处理的段数
+  const translatedTextNodes = new Set();     // 记录所有被替换过文本的节点
+  const originalTextMap = new WeakMap();     // 节点 -> 原文
+
+  function applyResults(metas, results) {
+    for (let i = 0; i < metas.length; i++) {
+      if (!results[i]) continue;
+      const meta = metas[i];
+      if (meta.type === 'text') {
+        const node = meta.node;
+        if (!node.isConnected) continue;
+        const parent = node.parentElement;
+        if (!parent) continue;
+        if (!originalTextMap.has(node)) {
+          originalTextMap.set(node, node.textContent);
+          translatedTextNodes.add(node);
+        }
+        parent.dataset.translated = '1';
+        node.textContent = results[i];
+      } else {
+        const el = meta.el;
+        if (!el.isConnected) continue;
+        el.dataset.originalPlaceholder = el.placeholder;
+        el.placeholder = results[i];
+        el.dataset.translated = '1';
+      }
+    }
+  }
+
   let isTranslating = false;
   let pendingRoot = null;
   async function translatePage(root) {
@@ -237,38 +233,58 @@
         const textNodes = collectTextNodes(root);
         const placeholders = collectPlaceholders(root);
         if (textNodes.length === 0 && placeholders.length === 0) break;
-        const allTexts = []; const allMeta = [];
-        for (let i = 0; i < textNodes.length; i++) { allTexts.push(textNodes[i].textContent.trim()); allMeta.push({ type: 'text', node: textNodes[i] }); }
-        for (let i = 0; i < placeholders.length; i++) { allTexts.push(placeholders[i].placeholder.trim()); allMeta.push({ type: 'ph', el: placeholders[i] }); }
-        const results = await batchTranslate(allTexts);
-        for (let i = 0; i < allMeta.length; i++) {
-          if (!results[i]) continue;
-          const meta = allMeta[i];
-          if (meta.type === 'text') {
-            const parent = meta.node.parentElement; if (!parent) continue;
-            if (!parent.dataset.originalText) parent.dataset.originalText = meta.node.textContent;
-            parent.dataset.translated = '1';
-            if (displayMode === 'bilingual') {
-              const s = document.createElement('span'); s.className = 'tu-bi'; s.textContent = results[i];
-              if (meta.node.nextSibling) { parent.insertBefore(s, meta.node.nextSibling); } else { parent.appendChild(s); }
-            } else { meta.node.textContent = results[i]; }
-          } else { meta.el.dataset.originalPlaceholder = meta.el.placeholder; meta.el.placeholder = results[i]; meta.el.dataset.translated = '1'; }
+
+        const allMeta = [];
+        for (const node of textNodes) allMeta.push({ type: 'text', node });
+        for (const el of placeholders) allMeta.push({ type: 'ph', el });
+
+        // 切段
+        const segments = [];
+        for (let i = 0; i < allMeta.length; i += SEGMENT_SIZE) {
+          segments.push(allMeta.slice(i, i + SEGMENT_SIZE));
         }
+
+        // 并发 worker：每段完成立即应用，做到「分段翻译、及时显示」
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < segments.length) {
+            const seg = segments[cursor++];
+            const texts = seg.map(m => {
+              if (m.type === 'text') return m.node.isConnected ? m.node.textContent.trim() : '';
+              return m.el.isConnected ? m.el.placeholder.trim() : '';
+            });
+            let results;
+            try {
+              results = await batchTranslate(texts);
+            } catch (_) {
+              results = new Array(texts.length).fill(null);
+            }
+            applyResults(seg, results);
+          }
+        };
+        const workerCount = Math.min(SEGMENT_CONCURRENCY, segments.length);
+        const workers = [];
+        for (let i = 0; i < workerCount; i++) workers.push(worker());
+        await Promise.all(workers);
+
         if (pendingRoot) { root = pendingRoot; }
       } while (pendingRoot);
     } finally { isTranslating = false; }
   }
+
   function restorePage() {
-    document.querySelectorAll('.tu-bi').forEach(el => el.remove());
-    document.querySelectorAll('[data-translated]').forEach(el => {
-      if (el.dataset.originalText) {
-        for (const child of el.childNodes) { if (child.nodeType === Node.TEXT_NODE) { child.textContent = el.dataset.originalText; break; } }
-        delete el.dataset.originalText;
+    for (const node of translatedTextNodes) {
+      if (node.isConnected && originalTextMap.has(node)) {
+        node.textContent = originalTextMap.get(node);
       }
+    }
+    translatedTextNodes.clear();
+    document.querySelectorAll('[data-translated]').forEach(el => {
       if (el.dataset.originalPlaceholder) { el.placeholder = el.dataset.originalPlaceholder; delete el.dataset.originalPlaceholder; }
       delete el.dataset.translated;
     });
   }
+
   let lastHeight = 0;
   function onScroll() { const h = document.documentElement.scrollHeight; if (h > lastHeight) { lastHeight = h; if (autoMode) translatePage(); } }
   let mutationRafId = null;
@@ -299,9 +315,6 @@
   }
   function isPageInTargetLang() { const lang = (document.documentElement.lang || '').split('-')[0].toLowerCase(); const target = targetLang.split('-')[0].toLowerCase(); return lang === target; }
 
-  // ══════════════════════════════════════════════════════════
-  // 初始化：DOMContentLoaded + 延时兜底，避免 rAF 在沙箱中不触发
-  // ══════════════════════════════════════════════════════════
   let _initialized = false;
   function initWhenBodyReady() {
     const startInit = () => {
@@ -314,7 +327,7 @@
     };
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', startInit, { once: true });
-      setTimeout(startInit, 2000); // 兜底：极端情况下 DOMContentLoaded 未触发
+      setTimeout(startInit, 2000); // 兜底
     } else {
       startInit();
     }
@@ -345,23 +358,19 @@
       '.tu-modes button{flex:1;padding:6px 0;border:none;border-radius:6px;font-size:11px;cursor:pointer;' +
         'background:transparent;color:#999;transition:all .15s;font-weight:500}' +
       '.tu-modes button.on{background:#fff;color:#333;box-shadow:0 1px 3px rgba(0,0,0,0.1)}' +
+      '.tu-switch-row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;font-size:12px;color:#666}' +
+      '.tu-switch{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}' +
+      '.tu-switch input{opacity:0;width:0;height:0}' +
+      '.tu-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#ccc;transition:.2s;border-radius:20px}' +
+      '.tu-slider:before{position:absolute;content:"";height:16px;width:16px;left:2px;bottom:2px;background:#fff;transition:.2s;border-radius:50%}' +
+      '.tu-switch input:checked + .tu-slider{background:#4a9eff}' +
+      '.tu-switch input:checked + .tu-slider:before{transform:translateX(16px)}' +
       '.tu-row{display:flex;gap:6px;margin-top:10px}' +
       '.tu-row button{flex:1;padding:7px 0;border:none;border-radius:6px;font-size:12px;cursor:pointer;' +
         'transition:background .2s}' +
       '.tu-row .tu-restore{background:#f0f0f0;color:#555}' +
       '.tu-row .tu-go{background:#4a9eff;color:#fff}' +
       '.tu-row .tu-exclude{background:#ff6b6b;color:#fff;font-size:11px}' +
-      '.tu-bi{display:block;margin-top:2px;font-size:.9em;line-height:1.5;color:#5a8fb4;' +
-        'border-left:2px solid rgba(74,158,255,0.3);padding-left:8px}' +
-      'a .tu-bi,span .tu-bi,em .tu-bi,strong .tu-bi,b .tu-bi,i .tu-bi,label .tu-bi,' +
-        'small .tu-bi,sub .tu-bi,sup .tu-bi,u .tu-bi{display:inline;border-left:none;' +
-        'padding-left:0;margin-top:0;margin-left:4px;font-size:.88em}' +
-      'a .tu-bi::before,span .tu-bi::before,em .tu-bi::before,strong .tu-bi::before,' +
-        'b .tu-bi::before,i .tu-bi::before,label .tu-bi::before,small .tu-bi::before,' +
-        'sub .tu-bi::before,sup .tu-bi::before,u .tu-bi::before{content:"("}' +
-      'a .tu-bi::after,span .tu-bi::after,em .tu-bi::after,strong .tu-bi::after,' +
-        'b .tu-bi::after,i .tu-bi::after,label .tu-bi::after,small .tu-bi::after,' +
-        'sub .tu-bi::after,sup .tu-bi::after,u .tu-bi::after{content:")"}' +
       '@media(prefers-color-scheme:dark){' +
         '.tu-panel{background:rgba(30,30,30,0.97);color:#eee}' +
         '.tu-panel select{background:#2a2a2a;color:#eee;border-color:#444}' +
@@ -369,22 +378,22 @@
         '.tu-status{background:#222;color:#999}' +
         '.tu-modes{background:#333}' +
         '.tu-modes button.on{background:#444;color:#eee}' +
-        '.tu-bi{color:#7babc8;border-left-color:rgba(100,160,220,0.25)}' +
+        '.tu-switch-row{color:#aaa}' +
+        '.tu-slider{background:#555}' +
+        '.tu-switch input:checked + .tu-slider{background:#4a9eff}' +
       '}'
     );
     const ui = document.createElement('div');
     ui.className = 'translate-ui';
     ui.style.right = uiPos.right + 'px';
     ui.style.bottom = uiPos.bottom + 'px';
-    // 初始化显示/隐藏
     ui.style.display = floatButtonVisible ? 'block' : 'none';
-    translateUI = ui; // 保存按钮引用
+    translateUI = ui;
 
     ui.innerHTML =
       '<div class="tu-panel" id="tuPanel">' +
         '<label>翻译引擎</label>' +
         '<select id="tuEngine">' +
-          '<option value="deepl">DeepL (Free)</option>' +
           '<option value="tencent">Tencent</option>' +
         '</select>' +
         '<label>目标语言</label>' +
@@ -392,8 +401,11 @@
         '<label>显示模式</label>' +
         '<div class="tu-modes" id="tuModes">' +
           '<button data-m="translated"' + (displayMode === 'translated' ? ' class="on"' : '') + '>仅译文</button>' +
-          '<button data-m="bilingual"' + (displayMode === 'bilingual' ? ' class="on"' : '') + '>双语</button>' +
           '<button data-m="original"' + (displayMode === 'original' ? ' class="on"' : '') + '>原文</button>' +
+        '</div>' +
+        '<div class="tu-switch-row">' +
+          '<span>自动翻译</span>' +
+          '<label class="tu-switch"><input type="checkbox" id="tuAuto"><span class="tu-slider"></span></label>' +
         '</div>' +
         '<div class="tu-status" id="tuStatus">Ready</div>' +
         '<div class="tu-row">' +
@@ -416,8 +428,10 @@
     const langSelect = document.getElementById('tuLang');
     const statusEl = document.getElementById('tuStatus');
     const modesEl = document.getElementById('tuModes');
+    const autoToggle = document.getElementById('tuAuto');
     engineSelect.value = currentEngine;
     langSelect.value = targetLang;
+    autoToggle.checked = autoMode;
     // 拖拽逻辑
     let isDragging = false;
     let startX, startY, startRight, startBottom;
@@ -472,6 +486,26 @@
       cache.clear();
       setStatus('Target: ' + (ALL_LANGUAGES[targetLang] || targetLang));
     });
+
+    // 自动翻译开关
+    autoToggle.addEventListener('change', async () => {
+      autoMode = autoToggle.checked;
+      GM_setValue('autoMode', autoMode);
+      if (autoMode) {
+        btn.classList.add('active');
+        if (displayMode !== 'original' && !isPageInTargetLang()) {
+          setStatus('自动翻译中...');
+          var start = performance.now();
+          await translatePage();
+          setStatus('完成 (' + ((performance.now() - start) / 1000).toFixed(1) + 's)');
+        } else {
+          setStatus('自动翻译已开启');
+        }
+      } else {
+        setStatus('自动翻译已关闭');
+      }
+    });
+
     modesEl.addEventListener('click', async (e) => {
       var b = e.target.closest('button[data-m]');
       if (!b) return;
@@ -482,21 +516,26 @@
       displayMode = m;
       GM_setValue('displayMode', m);
       if (m === 'original') {
+        // 切到原文时关闭自动翻译并同步开关
+        autoMode = false;
+        GM_setValue('autoMode', false);
+        autoToggle.checked = false;
         restorePage();
         btn.classList.remove('active');
         setStatus('显示原文');
       } else {
         restorePage();
         btn.classList.add('active');
-        setStatus(m === 'bilingual' ? '双语翻译中...' : '翻译中...');
+        setStatus('翻译中...');
         var start = performance.now();
         await translatePage();
         setStatus('完成 (' + ((performance.now() - start) / 1000).toFixed(1) + 's)');
       }
     });
+
+    // 手动翻译：只翻译当前页面一次，不改变自动翻译开关
     document.getElementById('tuGo').addEventListener('click', async () => {
       panel.classList.remove('show'); btn.classList.add('active');
-      autoMode = true; GM_setValue('autoMode', true);
       restorePage(); cache.clear();
       lastHeight = document.documentElement.scrollHeight;
       setStatus('翻译中...');
@@ -504,11 +543,14 @@
       await translatePage();
       setStatus('完成 (' + ((performance.now() - start) / 1000).toFixed(1) + 's)');
     });
+
     document.getElementById('tuRestore').addEventListener('click', () => {
       panel.classList.remove('show'); btn.classList.remove('active');
       autoMode = false; GM_setValue('autoMode', false);
+      autoToggle.checked = false;
       restorePage(); setStatus('已还原');
     });
+
     document.getElementById('tuExclude').addEventListener('click', () => {
       if (!excludedHosts.includes(location.host)) {
         excludedHosts.push(location.host);
@@ -519,9 +561,11 @@
 
     window.addEventListener('scroll', onScroll, { passive: true });
     observer.observe(document.body, { childList: true, subtree: true });
+
+    // 初始化时若自动翻译开关已开启（老用户配置），按原逻辑自动翻译
     if (autoMode && !isPageInTargetLang() && displayMode !== 'original') {
       queueMicrotask(async () => {
-        setStatus(displayMode === 'bilingual' ? '双语翻译中...' : '自动翻译中...');
+        setStatus('自动翻译中...');
         var start = performance.now();
         await translatePage();
         setStatus('完成 (' + ((performance.now() - start) / 1000).toFixed(1) + 's)');

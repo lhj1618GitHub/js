@@ -8,7 +8,6 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
-// @connect      api.deeplx.org
 // @connect      transmart.qq.com
 // @run-at       document-end
 // ==/UserScript==

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页翻译器
-// @description  支持整页分段流式翻译
-// @version      8.5
+// @description  支持整页分段流式翻译（英/日/韩 → 中文）
+// @version      9.0
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -9,6 +9,8 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @connect      transmart.qq.com
+// @connect      api-free.deepl.com
+// @connect      api.deepl.com
 // @run-at       document-end
 // ==/UserScript==
 (async () => {
@@ -19,32 +21,34 @@
   const floatButtonVisible = GM_getValue('floatButtonVisible', true);
 
   // ══════════════════════════════════════════════════════════
-  // 配置读取 (默认引擎 tencent，默认不自动翻译)
+  // 配置读取（目标语言固定为简体中文）
   // ══════════════════════════════════════════════════════════
-  const deviceLang = (navigator.language || navigator.userLanguage || 'zh-CN').split('-')[0];
   const [
     _engine,
-    _targetLang,
     _autoMode,
     _excludedHosts,
-    _displayMode,
     _pos
   ] = await Promise.all([
     GM_getValue('engine', 'tencent'),
-    GM_getValue('targetLang', deviceLang === 'zh' ? 'zh-CN' : deviceLang),
     GM_getValue('autoMode', false),
     GM_getValue('excludedHosts', '[]'),
-    GM_getValue('displayMode', 'translated'),
     GM_getValue('uiPos', JSON.stringify({ right: 20, bottom: 20 }))
   ]);
   let currentEngine = _engine;
-  let targetLang = _targetLang;
+  const targetLang = 'zh-CN';
   let autoMode = _autoMode;
   let excludedHosts = JSON.parse(_excludedHosts);
-  // 旧配置迁移：bilingual 模式已移除
-  let displayMode = _displayMode === 'bilingual' ? 'translated' : _displayMode;
   let uiPos = JSON.parse(_pos);
   let translateUI = null; // 保存悬浮按钮DOM
+
+  // 更新面板中「按钮显示」三态高亮
+  function updateVisModeHighlight(mode) {
+    const el = document.getElementById('tuVisModes');
+    if (!el) return;
+    el.querySelectorAll('button').forEach(x => {
+      x.classList.toggle('on', x.dataset.v === mode);
+    });
+  }
 
   // 菜单命令
   if (excludedHosts.includes(location.host)) {
@@ -57,38 +61,66 @@
     return;
   }
 
-  // 显示/隐藏悬浮按钮 菜单
+  // 显示/隐藏悬浮按钮 菜单（持久化切换；也可用于从「临时隐藏」状态恢复）
   GM_registerMenuCommand('🔘 显示/隐藏悬浮按钮', () => {
-    const visible = !GM_getValue('floatButtonVisible', true);
-    GM_setValue('floatButtonVisible', visible);
-    if (translateUI) {
-      translateUI.style.display = visible ? 'block' : 'none';
+    const currentlyVisible = translateUI && translateUI.style.display !== 'none';
+    if (currentlyVisible) {
+      GM_setValue('floatButtonVisible', false);
+      if (translateUI) translateUI.style.display = 'none';
+    } else {
+      GM_setValue('floatButtonVisible', true);
+      if (translateUI) translateUI.style.display = 'block';
+      updateVisModeHighlight('show');
     }
   });
 
   // ══════════════════════════════════════════════════════════
-  // 语言配置
-  // ══════════════════════════════════════════════════════════
-  const ALL_LANGUAGES = { "zh-CN": "中文（简体）", "zh-TW": "中文（繁體）", "en": "English", "ja": "日本語", "ko": "한국어", "fr": "Français", "de": "Deutsch", "es": "Español", "ru": "Русский", "pt": "Português", "pt-PT": "Português (Portugal)", "ar": "العربية", "th": "ไทย", "vi": "Tiếng Việt", "it": "Italiano", "tr": "Türkçe", "id": "Indonesia", "ms": "Bahasa Melayu", "nl": "Nederlands", "pl": "Polski", "uk": "Українська", "cs": "Čeština", "sk": "Slovenčina", "hu": "Magyar", "ro": "Română", "bg": "Български", "hr": "Hrvatski", "sr": "Српски", "sl": "Slovenščina", "lt": "Lietuvių", "lv": "Latviešu", "et": "Eesti", "fi": "Suomi", "sv": "Svenska", "da": "Dansk", "no": "Norsk", "is": "Íslenska", "el": "Ελληνικά", "he": "עברית", "hi": "हिन्दी", "bn": "বাংলা", "ta": "தமிழ்", "te": "తెలుగు", "kn": "ಕನ್ನಡ", "ml": "മലയാളം", "pa": "ਪੰਜਾਬੀ", "gu": "ગુજરાતી", "mr": "मराठी", "ne": "नेपाली", "si": "සිංහල", "ur": "اردو", "fa": "فارسی", "ps": "پښتو", "my": "မြန်မာ", "km": "ខ្មែរ", "lo": "ລາວ", "ka": "ქართული", "hy": "Հայերեն", "az": "Azərbaycan", "kk": "Қазақ", "uz": "Oʻzbek", "mn": "Монгол", "sq": "Shqip", "mk": "Македонски", "be": "Беларуская", "bs": "Bosanski", "ca": "Català", "gl": "Galego", "eu": "Euskara", "mt": "Malti", "cy": "Cymraeg", "ga": "Gaeilge", "gd": "Gàidhlig", "lb": "Lëtzebuergesch", "af": "Afrikaans", "sw": "Kiswahili", "ha": "Hausa", "ig": "Igbo", "yo": "Yorùbá", "zu": "isiZulu", "xh": "isiXhosa", "sn": "chiShona", "st": "Sesotho", "so": "Soomaali", "am": "አማርኛ", "ti": "ትግርኛ", "om": "Oromoo", "mg": "Malagasy", "ny": "Chichewa", "lg": "Luganda", "rw": "Kinyarwanda", "tg": "Тоҷикӣ", "tk": "Türkmen", "ky": "Кыргызча", "tt": "Татар", "eo": "Esperanto", "la": "Latina", "co": "Corsu", "fy": "Frysk", "haw": "ʻŌlelo Hawaiʻi", "sm": "Gagana Samoa", "mi": "Te Reo Māori", "ceb": "Cebuano", "fil": "Filipino", "jv": "Basa Jawa", "su": "Basa Sunda", "hmn": "Hmong", "ht": "Kreyòl Ayisyen", "ku": "Kurdî", "ckb": "کوردی", "sd": "سنڌي", "or": "ଓଡ଼ିଆ", "as": "অসমীয়া", "sa": "संस्कृतम्", "mai": "मैथिली", "bho": "भोजपुरी", "doi": "डोगरी", "ug": "ئۇيغۇرچە", "dv": "ދިވެހި", "ak": "Akan", "ee": "Eʋegbe", "gn": "Guarani", "ay": "Aymar", "bm": "Bamanankan", "ln": "Lingála", "nso": "Sepedi", "ts": "Xitsonga", "qu": "Runasimi", "ilo": "Ilokano", "kri": "Krio", "lus": "Mizo tawng", "mni-Mtei": "ꯃꯤꯇꯩꯂꯣꯟ", "gom": "कोंकणी", "ab": "Аԥсуа", "ace": "Bahsa Acèh", "ach": "Lwo", "aa": "Qafaraf", "alz": "Alur", "av": "Авар", "awa": "अवधी", "ban": "ᬩᬮᬶ", "bal": "بلوچی", "bci": "Baoulé", "ba": "Башҡорт", "btx": "Batak Karo", "bts": "Batak Simalungun", "bbc": "Batak Toba", "bem": "Bemba", "bew": "Betawi", "bik": "Bikol", "br": "Brezhoneg", "bua": "Буряад", "yue": "粵語", "ch": "Chamoru", "ce": "Нохчийн", "chk": "Chuukese", "cv": "Чӑваш", "crh": "Qırımtatar", "prs": "دری", "din": "Thuɔŋjäŋ", "dov": "Dombe", "dyu": "Julakan", "dz": "རྫོང་ཁ", "fo": "Føroyskt", "fj": "Na Vosa Vakaviti", "fon": "Fɔ̀ngbè", "fr-CA": "Français (Canada)", "fur": "Furlan", "ff": "Pulaar", "gaa": "Gã", "cnh": "Lai", "hil": "Hiligaynon", "hrx": "Hunsrik", "iba": "Iban", "iu-Latn": "ᐃᓄᒃᑎᑐᑦ (Latin)", "jam": "Jamaican Patois", "kac": "Jingpo", "kl": "Kalaallisut", "kr": "Kanuri", "pam": "Kapampangan", "kha": "Khasi", "cgg": "Rukiga", "kg": "Kikongo", "mkw": "Kituba", "trp": "Kokborok", "kv": "Коми", "ltg": "Latgaļu", "lij": "Lìgure", "li": "Limburgs", "lmo": "Lombard", "luo": "Dholuo", "mad": "Madhurâ", "mak": "Makassar", "ms-Arab": "بهاس ملايو", "mam": "Mam", "gv": "Gaelg", "mh": "Kajin Majōl", "mwr": "मारवाड़ी", "mfe": "Kreol Morisien", "chm": "Марий", "min": "Minangkabau", "nhe": "Nahuatl", "ndc-ZW": "Ndau", "nr": "isiNdebele", "new": "नेपाल भाषा", "nqo": "ߒߞߏ", "nus": "Thok Nath", "oc": "Occitan", "os": "Ирон", "pag": "Pangasinan", "pap": "Papiamento", "pa-Arab": "پنجابی", "kek": "Qʼeqchiʼ", "rom": "Romani", "rn": "Ikirundi", "se": "Davvisámegiella", "sg": "Sängö", "bo": "བོད་ཡིག", "dsb": "Dolnoserbšćina", "hsb": "Hornjoserbšćina", "ikt": "Inuinnaqtun", "iu": "ᐃᓄᒃᑎᑐᑦ", "lzh": "文言文", "mvf": "ᠮᠣᠩ᭗᭙᭞", "brx": "बर'", "hne": "छत्तीसगढ़ी", "ks": "कॉशुर", "mrj": "Мары", "sa-Latn": "Sanskrit (Latin)", "sc": "Sardu", "scn": "Sicilianu", "szl": "Ślůnski", "su-Latn": "Sunda (Latin)", "tcy": "ತುಳು", "vec": "Vèneto", "war": "Winaray", "wo": "Wolof", "zap": "Zapotec", "ms-Latn": "Malay (Latin)" };
-  const LANG_GROUPS = { "常用": ["zh-CN","zh-TW","en","ja","ko","fr","de","es","ru","pt","ar","th","vi","it","tr","id"], "欧洲": ["nl","pl","uk","cs","sk","hu","ro","bg","hr","sr","sl","lt","lv","et","fi","sv","da","no","is","el","be","bs","ca","gl","eu","mt","cy","ga","gd","lb","af","eo","la","co","fy","fo","br","oc","sc","scn","szl","fur","lij","lmo","li","vec","ltg","dsb","hsb","gv","se"], "亚洲": ["hi","bn","ta","te","kn","ml","pa","gu","mr","ne","si","ur","fa","ps","my","km","lo","ka","hy","az","kk","uz","mn","tg","tk","ky","tt","ug","dv","or","as","sa","mai","bho","doi","mni-Mtei","gom","awa","ks","brx","hne","mwr","trp","kac","bo","dz","yue","lzh","ms","fil","ceb","jv","su","hmn","ilo","hil","bik","pam","pag","war","ban","mad","mak","min","ace","btx","bts","bbc","bew","iba","ms-Arab","kha"], "非洲": ["sw","ha","ig","yo","zu","xh","sn","st","so","am","ti","om","mg","ny","lg","rw","ak","ee","bm","ln","nso","ts","kri","wo","ff","gaa","fon","bci","dyu","bem","luo","sg","kg","mkw","dov","nus","din","ach","alz","ndc-ZW","nr","rn","mfe"], "美洲/大洋洲": ["pt-PT","fr-CA","ht","qu","gn","ay","haw","sm","mi","fj","mh","ch","chk","jam","nhe","mam","kek","pap","hrx","ikt","iu","iu-Latn","kl"], "其他": ["ab","av","ba","bua","ce","cv","crh","kv","chm","mrj","os","rom","nqo","aa","bal","cnh","kr","prs","pa-Arab","sd","ckb","ku","he"] };
-
-  // ══════════════════════════════════════════════════════════
-  // 翻译引擎（仅腾讯）
+  // 翻译引擎（Tencent / DeepL，目标语言固定中文）
   // ══════════════════════════════════════════════════════════
   const Engine = {
     tencent: {
       name: 'Tencent', _clientKey: null,
       getClientKey() { if (this._clientKey) return this._clientKey; this._clientKey = 'browser-chrome-120.0-Windows_10-' + crypto.randomUUID() + '-' + Date.now(); return this._clientKey; },
-      langCode(l) { const m = { 'zh': 'zh', 'zh-CN': 'zh', 'zh-TW': 'zh-TW' }; return m[l] || l; },
-      async translate(text, toLang) {
-        const to = this.langCode(toLang);
-        const r = await gmFetch({ method: 'POST', url: 'https://transmart.qq.com/api/imt', headers: { 'Content-Type': 'application/json' }, data: JSON.stringify({ header: { fn: 'auto_translation', session: '', client_key: this.getClientKey(), user: '' }, type: 'plain', model_category: 'normal', text_domain: 'general', source: { lang: 'auto', text_list: [text] }, target: { lang: to } }), });
+      langCode() { return 'zh'; },
+      async translate(text) {
+        const r = await gmFetch({ method: 'POST', url: 'https://transmart.qq.com/api/imt', headers: { 'Content-Type': 'application/json' }, data: JSON.stringify({ header: { fn: 'auto_translation', session: '', client_key: this.getClientKey(), user: '' }, type: 'plain', model_category: 'normal', text_domain: 'general', source: { lang: 'auto', text_list: [text] }, target: { lang: 'zh' } }), });
         if (r.status !== 200) throw new Error('Tencent error'); return JSON.parse(r.responseText).auto_translation[0];
       },
-      async translateBatch(texts, toLang) {
-        const to = this.langCode(toLang);
-        const r = await gmFetch({ method: 'POST', url: 'https://transmart.qq.com/api/imt', headers: { 'Content-Type': 'application/json' }, data: JSON.stringify({ header: { fn: 'auto_translation', session: '', client_key: this.getClientKey(), user: '' }, type: 'plain', model_category: 'normal', text_domain: 'general', source: { lang: 'auto', text_list: texts }, target: { lang: to } }), });
+      async translateBatch(texts) {
+        const r = await gmFetch({ method: 'POST', url: 'https://transmart.qq.com/api/imt', headers: { 'Content-Type': 'application/json' }, data: JSON.stringify({ header: { fn: 'auto_translation', session: '', client_key: this.getClientKey(), user: '' }, type: 'plain', model_category: 'normal', text_domain: 'general', source: { lang: 'auto', text_list: texts }, target: { lang: 'zh' } }), });
         if (r.status !== 200) throw new Error('Tencent batch error'); return JSON.parse(r.responseText).auto_translation;
+      }
+    },
+    deepl: {
+      name: 'DeepL',
+      apiKey: '295c901b-8af5-4df9-953c-a83a18005f56:fx',
+      get endpoint() {
+        return this.apiKey.endsWith(':fx')
+          ? 'https://api-free.deepl.com/v2/translate'
+          : 'https://api.deepl.com/v2/translate';
+      },
+      langCode() { return 'ZH'; },
+      async translate(text) {
+        const arr = await this.translateBatch([text]);
+        return arr[0];
+      },
+      async translateBatch(texts) {
+        if (!texts || texts.length === 0) return [];
+        const r = await gmFetch({
+          method: 'POST',
+          url: this.endpoint,
+          headers: {
+            'Authorization': 'DeepL-Auth-Key ' + this.apiKey,
+            'Content-Type': 'application/json'
+          },
+          data: JSON.stringify({ text: texts, target_lang: 'ZH' })
+        });
+        if (r.status !== 200) throw new Error('DeepL error ' + r.status);
+        const data = JSON.parse(r.responseText);
+        const arr = (data.translations || []).map(t => t.text);
+        const out = new Array(texts.length).fill(null);
+        for (let i = 0; i < Math.min(arr.length, out.length); i++) out[i] = arr[i];
+        return out;
       }
     }
   };
@@ -110,7 +142,7 @@
     const trimmed = text.trim(); if (/^\d+$/.test(trimmed)) return null;
     const cached = cacheGet(trimmed); if (cached) return cached;
     try {
-      const result = await Engine[currentEngine].translate(trimmed, targetLang);
+      const result = await Engine[currentEngine].translate(trimmed);
       if (result && result !== trimmed) { cacheSet(trimmed, result); return result; }
     } catch (_) {}
     return null;
@@ -133,7 +165,7 @@
         for (let b = 0; b < uncached.length; b += BATCH_SIZE) { chunks.push({ texts: uncached.slice(b, b + BATCH_SIZE), idxs: uncachedIdx.slice(b, b + BATCH_SIZE) }); }
         await Promise.all(chunks.map(async ({ texts: chunk, idxs }) => {
           try {
-            const batchResults = await engine.translateBatch(chunk, targetLang);
+            const batchResults = await engine.translateBatch(chunk);
             if (batchResults) {
               for (let j = 0; j < batchResults.length; j++) {
                 if (batchResults[j] && batchResults[j] !== chunk[j]) { cacheSet(chunk[j], batchResults[j]); results[idxs[j]] = batchResults[j]; }
@@ -164,13 +196,30 @@
     }
     return false;
   }
-  const _langRegex = {};
-  function getLangRegex(lang) {
-    if (_langRegex[lang]) return _langRegex[lang];
-    const patterns = { 'zh': /^[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\s\d\p{P}]+$/u, 'en': /^[a-zA-Z\s\d\p{P}]+$/u, 'ja': /^[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff\s\d\p{P}]+$/u, 'ko': /^[\uac00-\ud7af\u1100-\u11ff\s\d\p{P}]+$/u, 'ar': /^[\u0600-\u06ff\u0750-\u077f\s\d\p{P}]+$/u, 'th': /^[\u0e00-\u0e7f\s\d\p{P}]+$/u, 'ru': /^[\u0400-\u04ff\s\d\p{P}]+$/u, };
-    _langRegex[lang] = patterns[lang] || null; return _langRegex[lang];
+
+  // ── 语言检测：仅支持英/日/韩 → 中文 ──
+  function isChineseText(text) {
+    return /^[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\s\d\p{P}]+$/u.test(text.trim());
   }
-  function isTargetLang(text) { if (!text || !text.trim()) return true; const lang = targetLang.split('-')[0]; const re = getLangRegex(lang); return re ? re.test(text.trim()) : false; }
+  function isJapaneseText(text) {
+    return /[\u3040-\u309f\u30a0-\u30ff]/.test(text);
+  }
+  function isKoreanText(text) {
+    return /[\uac00-\ud7af\u1100-\u11ff]/.test(text);
+  }
+  function isEnglishText(text) {
+    const t = text.trim();
+    if (!t) return false;
+    if (/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(t)) return false;
+    return /[a-zA-Z]/.test(t);
+  }
+  function isSupportedSourceText(text) {
+    if (!text || !text.trim()) return false;
+    const t = text.trim();
+    if (isChineseText(t)) return false;
+    return isJapaneseText(t) || isKoreanText(t) || isEnglishText(t);
+  }
+
   function collectTextNodes(root) {
     const nodes = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -178,7 +227,7 @@
         if (shouldSkip(node.parentElement)) return NodeFilter.FILTER_REJECT;
         const text = node.textContent.trim();
         if (!text || text.length < 2 || /^\d+$/.test(text)) return NodeFilter.FILTER_REJECT;
-        if (isTargetLang(text)) return NodeFilter.FILTER_REJECT;
+        if (!isSupportedSourceText(text)) return NodeFilter.FILTER_REJECT;
         if (node.parentElement?.dataset?.translated) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
@@ -186,7 +235,10 @@
     while (walker.nextNode()) nodes.push(walker.currentNode);
     return nodes;
   }
-  function collectPlaceholders(root) { return [...root.querySelectorAll('input[placeholder], textarea[placeholder]')].filter(el => !el.dataset.translated && el.placeholder.trim() && !isTargetLang(el.placeholder)); }
+  function collectPlaceholders(root) {
+    return [...root.querySelectorAll('input[placeholder], textarea[placeholder]')]
+      .filter(el => !el.dataset.translated && el.placeholder.trim() && isSupportedSourceText(el.placeholder));
+  }
 
   // ══════════════════════════════════════════════════════════
   // 分段流式翻译
@@ -304,16 +356,10 @@
   // ══════════════════════════════════════════════════════════
   // UI 构建
   // ══════════════════════════════════════════════════════════
-  function buildLangOptions() {
-    let html = '';
-    for (const [group, codes] of Object.entries(LANG_GROUPS)) {
-      html += '<optgroup label="' + group + '">';
-      for (const code of codes) { const name = ALL_LANGUAGES[code] || code; html += '<option value="' + code + '"' + (code === targetLang ? ' selected' : '') + '>' + name + '</option>'; }
-      html += '</optgroup>';
-    }
-    return html;
+  function isPageInTargetLang() {
+    const lang = (document.documentElement.lang || '').split('-')[0].toLowerCase();
+    return lang === 'zh';
   }
-  function isPageInTargetLang() { const lang = (document.documentElement.lang || '').split('-')[0].toLowerCase(); const target = targetLang.split('-')[0].toLowerCase(); return lang === target; }
 
   let _initialized = false;
   function initWhenBodyReady() {
@@ -354,10 +400,10 @@
         'background:#fff;color:#333;outline:none;appearance:auto}' +
       '.tu-panel select:focus{border-color:#4a9eff}' +
       '.tu-status{margin-top:8px;padding:6px;background:#f8f8f8;border-radius:6px;font-size:11px;color:#666;text-align:center}' +
-      '.tu-modes{display:flex;margin-top:6px;background:#f0f0f0;border-radius:8px;padding:2px;gap:2px}' +
-      '.tu-modes button{flex:1;padding:6px 0;border:none;border-radius:6px;font-size:11px;cursor:pointer;' +
-        'background:transparent;color:#999;transition:all .15s;font-weight:500}' +
-      '.tu-modes button.on{background:#fff;color:#333;box-shadow:0 1px 3px rgba(0,0,0,0.1)}' +
+      '.tu-vis-modes{display:flex;margin-top:6px;background:#f0f0f0;border-radius:8px;padding:2px;gap:2px}' +
+      '.tu-vis-modes button{flex:1;padding:6px 0;border:none;border-radius:6px;font-size:11px;cursor:pointer;' +
+        'background:transparent;color:#999;transition:all .15s;font-weight:500;white-space:nowrap}' +
+      '.tu-vis-modes button.on{background:#fff;color:#333;box-shadow:0 1px 3px rgba(0,0,0,0.1)}' +
       '.tu-switch-row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;font-size:12px;color:#666}' +
       '.tu-switch{position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0}' +
       '.tu-switch input{opacity:0;width:0;height:0}' +
@@ -376,8 +422,8 @@
         '.tu-panel select{background:#2a2a2a;color:#eee;border-color:#444}' +
         '.tu-row .tu-restore{background:#333;color:#ccc}' +
         '.tu-status{background:#222;color:#999}' +
-        '.tu-modes{background:#333}' +
-        '.tu-modes button.on{background:#444;color:#eee}' +
+        '.tu-vis-modes{background:#333}' +
+        '.tu-vis-modes button.on{background:#444;color:#eee}' +
         '.tu-switch-row{color:#aaa}' +
         '.tu-slider{background:#555}' +
         '.tu-switch input:checked + .tu-slider{background:#4a9eff}' +
@@ -392,17 +438,17 @@
 
     ui.innerHTML =
       '<div class="tu-panel" id="tuPanel">' +
+        '<label>按钮显示</label>' +
+        '<div class="tu-vis-modes" id="tuVisModes">' +
+          '<button data-v="show" class="on">显示</button>' +
+          '<button data-v="temp">临时隐藏</button>' +
+          '<button data-v="permanent">永久隐藏</button>' +
+        '</div>' +
         '<label>翻译引擎</label>' +
         '<select id="tuEngine">' +
           '<option value="tencent">Tencent</option>' +
+          '<option value="deepl">DeepL</option>' +
         '</select>' +
-        '<label>目标语言</label>' +
-        '<select id="tuLang">' + buildLangOptions() + '</select>' +
-        '<label>显示模式</label>' +
-        '<div class="tu-modes" id="tuModes">' +
-          '<button data-m="translated"' + (displayMode === 'translated' ? ' class="on"' : '') + '>仅译文</button>' +
-          '<button data-m="original"' + (displayMode === 'original' ? ' class="on"' : '') + '>原文</button>' +
-        '</div>' +
         '<div class="tu-switch-row">' +
           '<span>自动翻译</span>' +
           '<label class="tu-switch"><input type="checkbox" id="tuAuto"><span class="tu-slider"></span></label>' +
@@ -425,17 +471,18 @@
     const btn = document.getElementById('tuBtn');
     const panel = document.getElementById('tuPanel');
     const engineSelect = document.getElementById('tuEngine');
-    const langSelect = document.getElementById('tuLang');
     const statusEl = document.getElementById('tuStatus');
-    const modesEl = document.getElementById('tuModes');
     const autoToggle = document.getElementById('tuAuto');
+    const visModesEl = document.getElementById('tuVisModes');
     engineSelect.value = currentEngine;
-    langSelect.value = targetLang;
     autoToggle.checked = autoMode;
-    // 拖拽逻辑
+    updateVisModeHighlight(floatButtonVisible ? 'show' : 'permanent');
+
+    // ─── 拖拽逻辑 ───
     let isDragging = false;
     let startX, startY, startRight, startBottom;
     let hasMoved = false;
+
     btn.addEventListener('pointerdown', (e) => {
       isDragging = true;
       startX = e.clientX;
@@ -445,6 +492,7 @@
       hasMoved = false;
       btn.setPointerCapture(e.pointerId);
     });
+
     btn.addEventListener('pointermove', (e) => {
       if (!isDragging) return;
       const dx = startX - e.clientX;
@@ -459,6 +507,7 @@
       ui.style.right = newRight + 'px';
       ui.style.bottom = newBottom + 'px';
     });
+
     btn.addEventListener('pointerup', (e) => {
       if (!isDragging) return;
       isDragging = false;
@@ -467,6 +516,7 @@
         GM_setValue('uiPos', JSON.stringify(uiPos));
       }
     });
+
     function setStatus(msg) { if (statusEl) statusEl.textContent = msg; }
     btn.addEventListener('click', (e) => {
       if (hasMoved) return;
@@ -480,11 +530,38 @@
       cache.clear();
       setStatus('Engine: ' + (Engine[currentEngine] ? Engine[currentEngine].name : currentEngine));
     });
-    langSelect.addEventListener('change', () => {
-      targetLang = langSelect.value;
-      GM_setValue('targetLang', targetLang);
-      cache.clear();
-      setStatus('Target: ' + (ALL_LANGUAGES[targetLang] || targetLang));
+
+    // ─── 按钮显示三态切换 ───
+    visModesEl.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-v]');
+      if (!b) return;
+      const v = b.dataset.v;
+      if (b.classList.contains('on')) return; // 已是当前状态
+
+      if (v === 'show') {
+        // 当前按钮可见才能打开面板，正常情况已是「显示」；此分支作为保险
+        if (!confirm('确定要显示悬浮按钮吗？')) return;
+        GM_setValue('floatButtonVisible', true);
+        ui.style.display = 'block';
+        updateVisModeHighlight('show');
+        setStatus('已显示悬浮按钮');
+        return;
+      }
+
+      if (v === 'temp') {
+        if (!confirm('确定要临时隐藏悬浮按钮吗？\n\n本次会话将不再显示，刷新页面后自动恢复。')) return;
+        panel.classList.remove('show');
+        ui.style.display = 'none'; // 不写入持久化配置
+        return;
+      }
+
+      if (v === 'permanent') {
+        if (!confirm('确定要永久隐藏悬浮按钮吗？\n\n以后刷新页面也不会显示，可通过油猴菜单「显示/隐藏悬浮按钮」恢复。')) return;
+        GM_setValue('floatButtonVisible', false);
+        panel.classList.remove('show');
+        ui.style.display = 'none';
+        return;
+      }
     });
 
     // 自动翻译开关
@@ -493,7 +570,7 @@
       GM_setValue('autoMode', autoMode);
       if (autoMode) {
         btn.classList.add('active');
-        if (displayMode !== 'original' && !isPageInTargetLang()) {
+        if (!isPageInTargetLang()) {
           setStatus('自动翻译中...');
           var start = performance.now();
           await translatePage();
@@ -503,33 +580,6 @@
         }
       } else {
         setStatus('自动翻译已关闭');
-      }
-    });
-
-    modesEl.addEventListener('click', async (e) => {
-      var b = e.target.closest('button[data-m]');
-      if (!b) return;
-      var m = b.dataset.m;
-      if (m === displayMode) return;
-      modesEl.querySelectorAll('button').forEach(x => x.classList.remove('on'));
-      b.classList.add('on');
-      displayMode = m;
-      GM_setValue('displayMode', m);
-      if (m === 'original') {
-        // 切到原文时关闭自动翻译并同步开关
-        autoMode = false;
-        GM_setValue('autoMode', false);
-        autoToggle.checked = false;
-        restorePage();
-        btn.classList.remove('active');
-        setStatus('显示原文');
-      } else {
-        restorePage();
-        btn.classList.add('active');
-        setStatus('翻译中...');
-        var start = performance.now();
-        await translatePage();
-        setStatus('完成 (' + ((performance.now() - start) / 1000).toFixed(1) + 's)');
       }
     });
 
@@ -563,7 +613,7 @@
     observer.observe(document.body, { childList: true, subtree: true });
 
     // 初始化时若自动翻译开关已开启（老用户配置），按原逻辑自动翻译
-    if (autoMode && !isPageInTargetLang() && displayMode !== 'original') {
+    if (autoMode && !isPageInTargetLang()) {
       queueMicrotask(async () => {
         setStatus('自动翻译中...');
         var start = performance.now();
